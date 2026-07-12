@@ -1,0 +1,30 @@
+# Cloud Run service — tributary-aggregator
+# Triggered by Cloud Scheduler for daily BigQuery aggregation
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: tributary-aggregator
+  annotations:
+    run.googleapis.com/ingress: internal
+spec:
+  template:
+    spec:
+      serviceAccountName: tributary-sa@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: gcr.io/PROJECT_ID/tributary-aggregator:latest
+          env:
+            - name: GCP_PROJECT_ID
+              value: PROJECT_ID
+            - name: SCHEDULER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: tributary-scheduler-token
+                  key: latest
+          resources:
+            limits:
+              cpu: "1"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health

@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+service-account-key.json
+*.json.key

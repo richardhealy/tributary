@@ -1,0 +1,46 @@
+# Cloud Run service — tributary-subscriber
+# Receives Pub/Sub push messages and processes them
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: tributary-subscriber
+  annotations:
+    run.googleapis.com/ingress: internal-and-cloud-load-balancing
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "20"
+        run.googleapis.com/cpu-throttling: "false"
+    spec:
+      serviceAccountName: tributary-sa@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: gcr.io/PROJECT_ID/tributary-subscriber:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: GCP_PROJECT_ID
+              value: PROJECT_ID
+            - name: LLM_PROVIDER
+              value: anthropic
+            - name: LLM_MODEL
+              value: claude-haiku-4-5
+            - name: PUBSUB_VERIFICATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: tributary-pubsub-token
+                  key: latest
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tributary-anthropic-key
+                  key: latest
+          resources:
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
