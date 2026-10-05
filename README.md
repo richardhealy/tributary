@@ -62,8 +62,9 @@ pip install -r requirements.txt
 # Run all tests (no GCP credentials needed)
 pytest tests/ -v
 
-# Run the subscriber locally
+# Run the subscriber locally (from the repo root)
 uvicorn tributary.pipeline.subscriber:app --reload
+curl http://localhost:8000/health
 
 # Test with a Pub/Sub push message
 curl -X POST http://localhost:8000/pubsub/push \
@@ -76,41 +77,50 @@ curl -X POST http://localhost:8000/pubsub/push \
   }'
 ```
 
+The push request runs the whole pipeline, so it needs `ANTHROPIC_API_KEY` set and Google Cloud application default credentials that can write to the `tributary` BigQuery dataset. Without them the subscriber logs the error and returns `500 {"error": "pipeline error"}`, which Pub/Sub would treat as a nack and retry. The `/health` endpoints need neither.
+
+The aggregator runs the same way: `uvicorn tributary.scheduler.aggregator:app`.
+
 ---
 
 ## Project structure
 
 ```
-tributary/
-  parser/
-    event.py          Deterministic parser — no LLM, no I/O, fully tested
-  enrichment/
-    llm.py            LLM enrichment — closed vocab, PHI guard, PII-free prompts
-  bigquery/
-    schema.py         Three-table schema with partitioning, clustering, retention
-    writer.py         Event insert + audit record, stub-injectable for testing
-  pipeline/
-    subscriber.py     Cloud Run FastAPI app — Pub/Sub push endpoint
-  scheduler/
-    aggregator.py     Cloud Run FastAPI app — daily aggregation + PHI review
+tributary/                  repo root
+  tributary/                the Python package (imported as tributary.*)
+    parser/
+      event.py              Deterministic parser: no LLM, no I/O, fully tested
+    enrichment/
+      llm.py                LLM enrichment: closed vocab, PHI guard, PII-free prompts
+    bigquery/
+      schema.py             Three-table schema with partitioning, clustering, retention
+      writer.py             Event insert + audit record, stub-injectable for testing
+    pipeline/
+      subscriber.py         Cloud Run FastAPI app: Pub/Sub push endpoint
+    scheduler/
+      aggregator.py         Cloud Run FastAPI app: daily aggregation + PHI review
   infra/
-    cloudbuild.yaml   Cloud Build CI/CD
-    subscriber.yaml   Cloud Run service definition
-    aggregator.yaml   Cloud Run service definition (scheduler target)
-    scheduler.yaml    Cloud Scheduler job definition
-    pubsub.yaml       Pub/Sub topic + push subscription
+    cloudbuild.yaml         Cloud Build CI/CD (tests, build, push, deploy)
+    subscriber.yaml         Cloud Run service definition
+    aggregator.yaml         Cloud Run service definition (scheduler target)
   tests/
-    test_parser.py    24 parser tests — all deterministic, no API calls
-    test_enrichment.py  5 enrichment tests — stub LLM
-    test_writer.py    5 BigQuery writer tests — stub BQ client
+    test_parser.py          19 parser tests, all deterministic, no API calls
+    test_enrichment.py      5 enrichment tests with a stub LLM
+    test_writer.py          5 BigQuery writer tests with a stub BQ client
+    test_service_startup.py 6 tests that both services import the way uvicorn
+                            and the Docker images run them, and answer /health
+  Dockerfile.subscriber     image for the subscriber (copies only tributary/)
+  Dockerfile.aggregator     image for the aggregator (copies only tributary/)
 ```
+
+The Cloud Scheduler job and the Pub/Sub topic and push subscription have no files in `infra/` yet. The Deployment section below creates the Pub/Sub resources with `gcloud`.
 
 ---
 
 ## Test results
 
 ```
-29 passed in 0.05s  (no GCP credentials, no LLM API keys)
+35 passed in 2.8s  (no GCP credentials, no LLM API keys)
 ```
 
 Key tests:
@@ -120,6 +130,7 @@ Key tests:
 - Invalid LLM response falls back gracefully ✓
 - Dollar amounts normalised to cents ✓
 - Invalid JSON returns UNKNOWN type with parse error ✓
+- Both services import from the repo root and from the Docker image layout ✓
 
 ---
 
@@ -148,7 +159,7 @@ gcloud pubsub subscriptions create tributary-events-sub \
 
 ## HIPAA-readiness notes
 
-This is not a certified HIPAA-compliant system out of the box — that requires a BAA with GCP, organisational policies, and a full risk assessment. What this project demonstrates is the engineering patterns HIPAA compliance requires:
+This is not a certified HIPAA-compliant system out of the box. That needs a BAA with GCP, organisational policies, and a full risk assessment. What this project demonstrates is the engineering patterns HIPAA compliance requires:
 
 - PHI detection at parse time with automatic enrichment skip
 - PII hashing (dedup without storage)
@@ -157,3 +168,19 @@ This is not a certified HIPAA-compliant system out of the box — that requires 
 - No PII/PHI in log lines (log statements use structured metadata only)
 - No raw content sent to LLM providers
 - Production secrets via Secret Manager, never in code or local files
+
+---
+
+## Status and known limits
+
+The pipeline code, schema and tests are in place and both services start locally and in their Docker images. It has not been deployed to a real Google Cloud project, and the LLM and BigQuery calls have only been exercised against stubs.
+
+Known issues found while checking the code (details and next steps in [PROGRESS.md](PROGRESS.md)):
+
+- The aggregator puts the `target_date` from the request body straight into its SQL, so the backfill override is open to SQL injection, and re-running a day inserts duplicate summary rows.
+- Amount normalisation guesses dollars or cents from the size of the number, so `1500.00` dollars is stored as 1500 cents, `amount_cents: 500` becomes 50000, and `19.99` becomes 1998.
+- A message whose JSON is not an object (an array, a string or `null`) makes the parser raise, so the subscriber returns 500 and Pub/Sub keeps redelivering it until it expires (7 days by default) unless a dead-letter topic is set.
+- The push subscription in the Deployment section sends a Google-signed OIDC token, but the subscriber compares the bearer token with a fixed `PUBSUB_VERIFICATION_TOKEN`, so with that secret set every push would get a 401.
+- Any ten-digit number (a Unix timestamp, for example) is flagged as a phone number.
+
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
