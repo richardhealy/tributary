@@ -5,3 +5,9 @@ __pycache__/
 .pytest_cache/
 service-account-key.json
 *.json.key
+.ruff_cache/
+.DS_Store
+
+# Tooling and scratch files
+.claude/
+CLAUDE.md
