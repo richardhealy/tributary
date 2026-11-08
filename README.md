@@ -34,6 +34,7 @@ Cloud Scheduler (daily)
      ▼
 Cloud Run: tributary-aggregator
      └─── BigQuery aggregation → events_summary table
+          (one MERGE per day, so a re-run replaces that day's rows)
           + PHI review report (events where phi_present=True)
 ```
 
@@ -107,6 +108,7 @@ tributary/                  repo root
     test_parser.py          19 parser tests, all deterministic, no API calls
     test_enrichment.py      5 enrichment tests with a stub LLM
     test_writer.py          5 BigQuery writer tests with a stub BQ client
+    test_aggregator.py      17 aggregator tests with a stub BQ client
     test_service_startup.py 6 tests that both services import the way uvicorn
                             and the Docker images run them, and answer /health
   Dockerfile.subscriber     image for the subscriber (copies only tributary/)
@@ -120,7 +122,7 @@ The Cloud Scheduler job and the Pub/Sub topic and push subscription have no file
 ## Test results
 
 ```
-35 passed in 2.8s  (no GCP credentials, no LLM API keys)
+52 passed in 2.6s  (no GCP credentials, no LLM API keys)
 ```
 
 Key tests:
@@ -131,6 +133,7 @@ Key tests:
 - Dollar amounts normalised to cents ✓
 - Invalid JSON returns UNKNOWN type with parse error ✓
 - Both services import from the repo root and from the Docker image layout ✓
+- Aggregator `target_date` reaches BigQuery only as a DATE query parameter, and a malformed one gets a 400 before any query runs ✓
 
 ---
 
@@ -177,7 +180,6 @@ The pipeline code, schema and tests are in place and both services start locally
 
 Known issues found while checking the code (details and next steps in [PROGRESS.md](PROGRESS.md)):
 
-- The aggregator puts the `target_date` from the request body straight into its SQL, so the backfill override is open to SQL injection, and re-running a day inserts duplicate summary rows.
 - Amount normalisation guesses dollars or cents from the size of the number, so `1500.00` dollars is stored as 1500 cents, `amount_cents: 500` becomes 50000, and `19.99` becomes 1998.
 - A message whose JSON is not an object (an array, a string or `null`) makes the parser raise, so the subscriber returns 500 and Pub/Sub keeps redelivering it until it expires (7 days by default) unless a dead-letter topic is set.
 - The push subscription in the Deployment section sends a Google-signed OIDC token, but the subscriber compares the bearer token with a fixed `PUBSUB_VERIFICATION_TOKEN`, so with that secret set every push would get a 401.

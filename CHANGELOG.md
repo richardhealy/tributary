@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-09
+
+### Fixed
+
+- The aggregator's `POST /run` put the `target_date` from the request body straight into its SQL, so a value such as `2026-11-01' OR TRUE OR '` changed both queries (the PHI review query would then list PHI event IDs from every day). `target_date` must now be a real date written as `YYYY-MM-DD` and is passed to BigQuery as a DATE query parameter; anything else, or a body that is not a JSON object, gets a 400 before any query runs.
+- Re-running the aggregation for a day (a Cloud Scheduler retry or a backfill) inserted a second copy of that day's summary rows. The summary write is now a single `MERGE` that replaces the day's rows.
+- The summary query grouped on the raw `category` and `urgency` columns while writing them as `COALESCE(..., 'unknown')`, so an event with no category and one with category `unknown` could be counted in two rows with the same key. It now groups on the written values.
+
+### Added
+
+- `tests/test_aggregator.py`: 17 tests with a stub BigQuery client covering the date check, the query parameter, the default date and the shape of the summary write.
+
 ## 2026-10-06
 
 ### Fixed
